@@ -1,0 +1,382 @@
+---
+title: "Signature gene expression in ALS"
+author: "Masashi Fujita"
+date: "11/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(SummarizedExperiment)
+library(ComplexHeatmap)
+library(magrittr)
+library(circlize)
+library(gt)
+```
+
+## Load data
+Load bulk RNAseq gene expression profiles of ALS. They were log2CPM values
+computed using limma/voom, adjusted for RIN and library prep (manual/auto).
+
+```{r load.expr, echo=F}
+se <- readRDS("1_QC.rds")
+```
+
+As signature genes of microglia, I used "ALS cluster signatures_v2.xls", which 
+was sent from Marta on 10/13/2021.
+```{r load.sig, echo=F}
+clusters <- c(
+  "cl 1", "cl 2", "cl 3", "cl 4", "cl 5 6", "cl 7", "cl 8",
+  "cl 9", "cl 10", "cl 11", "cl 12", "cl 13", "cl 15"
+)
+
+load_sig_genes <- function(cluster){
+  dt <- read_xls("ALS cluster signatures_v2.xls",
+                 sheet = cluster, col_names = "gene")
+  dt$gene
+}
+
+sig <- lapply(X = clusters, FUN = load_sig_genes)
+names(sig) <- clusters
+```
+
+## Filter donors
+Some donors were neither ALS nor control. Use only ALS and control donors.
+Hereafter, "Control" represents donors in the subject group "Non-Neurological Control".
+"ALS" represents donors in the subject groups "ALS Spectrum MND", or "ALS Spectrum MND, 
+Other Neurological Disorders". We have 22 Controls and 154 ALS donors.
+
+```{r filter.donor, echo=F}
+# count the number of donors per diagnosis
+colData(se) %>%
+  data.frame(check.names = F) %>% 
+  group_by(ExternalSubjectId) %>% 
+  slice_head(n = 1) %>%
+  ungroup %>%
+  dplyr::count(`Subject Group`) %>% 
+  arrange(desc(n)) %>%
+  gt
+  
+target_groups <- c(
+  "ALS Spectrum MND",
+  "ALS Spectrum MND, Other Neurological Disorders",
+  "Non-Neurological Control"
+)
+
+se <- se[, colData(se)$`Subject Group` %in% target_groups]
+colData(se)$Disease <- ifelse(
+  colData(se)$`Subject Group` == "Non-Neurological Control",
+  "Control", "ALS")  
+```
+
+## Filter tissues
+Some tissues do not have enough samples. Here, I exclude tissues of <10 samples.
+```{r filter.tissue, echo=F}
+source_counts <- colData(se) %>%
+  data.frame(check.names = F) %>%
+  dplyr::count(`Sample Source`)
+
+source_counts %>% arrange(desc(n)) %>% gt()  # show table of tissue counts
+
+target_sources <- source_counts %>%
+  filter(n > 10) %>%
+  .$`Sample Source`
+
+se <- se[, colData(se)$`Sample Source` %in% target_sources]
+
+colData(se)$source_with_space <- colData(se)$`Sample Source` %>% str_replace_all("_", " ")
+```
+
+```{r def.sigfun, echo=F}
+## Signature function
+# Define functions for computing signature scores.
+
+calc_sig_score <- function(se, sig_genes){
+  sig.se <- se[rowData(se)$gene_name %in% sig_genes,]
+
+  #
+  # Eigengenes
+  #
+  # datExpr <- assays(sig.se)$voom %>% t
+  # colors <- rep("", ncol(datExpr))
+  # MEs <- moduleEigengenes(datExpr, colors)$eigengenes
+  # 
+  # MEs <- MEs %>% t %>% as.data.frame
+  # rownames(MEs) <- "signature_score"
+  # score.se <- SummarizedExperiment(assays=as.matrix(MEs), colData = colData(sig.se))
+  # names(assays(score.se)) <- "eigengene"
+  
+  #
+  # average expression
+  #
+  signature_score <- apply(X = assays(sig.se)$voom, MARGIN = 2, FUN = mean)
+  a <- data.frame(signature_score = signature_score) %>% t
+  score.se <- SummarizedExperiment(assays=as.matrix(a), colData = colData(sig.se))
+  names(assays(score.se)) <- "average"
+  
+  #
+  # average z-score
+  #
+  signature_score <- apply(X = assays(sig.se)$voom %>% t %>% scale %>% t,
+                           MARGIN = 2, FUN = mean)
+  a <- data.frame(signature_score = signature_score) %>% t
+  assays(score.se)[[2]] <- a
+  names(assays(score.se))[[2]] <- "z-score"
+  
+  #
+  # ssGSEA
+  #
+  # Not implemented yet...
+  
+  return(score.se)
+}
+```
+
+## Signature score
+Compute signature scores. For each gene, log2CPM were normalized into z-score.
+For each microglia signature, the z-scores were averaged over its member genes.
+```{r run.sigfun, echo=F}
+get_z_score_signature <- function(cluster){
+  sig.se <- calc_sig_score(se, sig[[cluster]])
+#  dt <- data.frame(assay(sig.se, "eigengene"), check.names = F)
+#  dt <- data.frame(assay(sig.se, "average"), check.names = F)  
+  dt <- data.frame(assay(sig.se, "z-score"), check.names = F)  
+  
+  rownames(dt) <- cluster
+  dt
+}
+
+res <- lapply(clusters, get_z_score_signature)
+z_score_signature <- do.call(rbind, res) %>%
+  t %>%
+  data.frame(check.names = F)
+```
+
+```{r combine.meta, echo=F}
+# Combine signature scores with metadata.
+
+stopifnot(rownames(colData(se)) == rownames(z_score_signature))
+meta.sig <- colData(se) %>%
+  data.frame(check.names = F) %>%
+  bind_cols(z_score_signature)
+```
+
+```{r count.source, echo=F}
+# Count tissues, and append counts to tissue names (from "Tissue" to "Tissue (n = 100)")
+sample.source.counts <- meta.sig %>% dplyr::count(`Sample Source`)
+
+meta.sig <- meta.sig %>%
+  inner_join(sample.source.counts) %>%
+  mutate(source_with_counts = source_with_space %>% str_c(., " (n = ", n, ")"))
+```
+
+```{r save.meta.sig, echo=F}
+saveRDS(meta.sig, "3_ALS.meta.sig.rds")
+```
+
+## Enrichment of signatures in ALS
+For each tissue and each microglia cluster, signature scores were compared
+between ALS and controls.
+Red circle, higher median signature score in ALS;
+Blue cells, higher median signature score in controls.
+P-values were computed by the Wilcoxon rank sum test, and the size of circles
+shows the Benjamini-Hochberg FDR. Clusters 1, 2, and 7 were enriched in spinal
+cord cervical of ALS patients.
+```{r enrichment, echo=F}
+# Compute enrichment of signatures in ALS compared to controls.
+
+calc_als_enrichment <- function(dt){
+  p.value <- wilcox.test(sig_score ~ Disease, data = dt)$p.value
+  median.als <- dt %>% filter(Disease == "ALS") %>% .$sig_score %>% median
+  median.cnt <- dt %>% filter(Disease == "Control") %>% .$sig_score %>% median
+  data.frame(diff.median = median.als - median.cnt, p.value = p.value)
+}
+
+# levels <- c("cl 1", "cl 2", "cl 3", "cl 4", "cl 5 6", "cl 7",
+            # "cl 8", "cl 9", "cl 10", "cl 11", "cl 12", "cl 13", "cl 15")
+levels <- c("1", "2", "3", "4", "5/6", "7",
+            "8", "9", "10", "11", "12", "13", "15")
+enrich <- meta.sig %>%
+  select(Disease, source_with_counts, starts_with("cl ")) %>%
+  gather(key = cluster, value = sig_score, starts_with("cl ")) %>%
+  mutate(cluster_wo_cl = cluster %>% str_remove("cl ") %>% str_replace(" ", "/") %>% factor(levels = levels)) %>%
+  group_by(source_with_counts, cluster_wo_cl) %>%
+  do(calc_als_enrichment(.)) %>%
+  ungroup %>%
+  mutate(
+    fdr = p.adjust(p.value, method = "BH"),
+#    fdr.mark = cut(fdr, breaks = c(0, 0.05, 0.1, 0.2, 1), labels = c("***", "**", "*", "")),
+    fdr.level = cut(fdr, breaks = c(0, 0.05, 0.1, 0.2, 1), labels = c("<0.05", "<0.1", "<0.2", ">=0.2"))
+  )
+```
+
+
+```{r bubble.enrichment, fig.height=3.5, fig.width=7, echo=F}
+enrich %>%
+  ggplot(aes(x = cluster_wo_cl, y = source_with_counts, size = fdr.level, color = diff.median)) +
+  geom_point() +
+  theme_classic() +
+  labs(x = "Microglia clusters", y = NULL, size = "FDR", color = "Enrichment in ALS") +
+  scale_size_manual(values = c("<0.05" = 8, "<0.1" = 4, "<0.2" = 2, ">=0.2" = 1)) +
+  scale_colour_gradient2(low = "#377EB8", high = "#E41A1C")
+```
+
+```{r heatfun, echo=F}
+# Define heatmap function.
+
+draw_heatmap <- function(se, sig_genes){
+  sig.se <- se[rowData(se)$gene_name %in% sig_genes, ]
+  
+  sample_sources <- colData(sig.se)$source_with_space
+  unique_sample_sources <- sample_sources %>% sort %>% unique
+  sample_source_col <- scales::hue_pal()(length(unique_sample_sources))
+  names(sample_source_col) <- unique_sample_sources
+
+  subject_groups <- colData(sig.se)$Disease
+  subject_group_col <- c(
+    "ALS" = "gray90",
+    "Control" = "black"
+  )
+  
+  ann <- HeatmapAnnotation(
+    `Sample Source` = sample_sources,
+    `Subject Group` = subject_groups,
+    col = list(
+      "Sample Source" = sample_source_col,
+      "Subject Group" = subject_group_col
+    ),
+    simple_anno_size = unit(1.5, "cm")
+  )
+
+  mat <- assays(sig.se)$voom
+  rownames(mat) <- rowData(sig.se)$gene_name
+  mat <- mat %>% t %>% scale %>% t
+
+  col = colorRamp2(c(-2, 0, 2), c("#377EB8", "white", "#E41A1C"))
+
+  h <- Heatmap(
+  mat,
+  name = "Gene expression",
+  col = col,
+  show_column_names = F,
+  top_annotation = ann,
+  column_split = sample_sources,
+  column_title_rot = 90,
+  clustering_method_rows = "ward.D2",
+  clustering_method_columns = "ward.D2",
+  cluster_column_slices = F
+  )
+  draw(h, padding = unit(c(2, 2, 20, 2), "mm"))
+}
+```
+\newpage
+
+## Signature gene expressions of cluster 1
+Log2CPM gene expression levels were scaled per row. Hierarchical clustering of
+samples and genes were performed using the Ward linkage. At the right end of 
+spinal cord cervical, signature gene expressions are low, and the control donors
+(black bars) are enriched. This visualizes the enrichment of the cluster 1
+signature in ALS.
+
+```{r cl1, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 1"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 2
+
+```{r cl2, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 2"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 3
+
+```{r cl3, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 3"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 4
+
+```{r cl4, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 4"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 5/6
+
+```{r cl5.6, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 5 6"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 7
+
+```{r cl7, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 7"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 8
+
+```{r cl8, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 8"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 9
+
+```{r cl9, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 9"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 10
+
+```{r cl10, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 10"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 11
+
+```{r cl11, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 11"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 12
+
+```{r cl12, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 12"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 13
+
+```{r cl13, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 13"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```
+\newpage
+
+## Signature gene expressions of cluster 15
+
+```{r cl15, fig.height=10, fig.width=20, echo=F}
+cl <- "cl 15"
+draw_heatmap(se, sig[[cl]]) %>% suppressMessages()
+```

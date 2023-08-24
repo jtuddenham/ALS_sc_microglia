@@ -1,0 +1,299 @@
+---
+title: "Signature score v.s. metadata"
+author: "Masashi Fujita"
+date: "11/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggpubr)
+library(gt)
+```
+
+```{r load, echo=F}
+# Load file that store metadata and signature gene expression.
+meta.sig <- readRDS("3_ALS.meta.sig.rds")
+```
+
+# Methods
+Use only Spinal_Cord_Cervical of patients with ALS.
+```{r als}
+meta.sig.als.spinal <- meta.sig %>%
+  filter(Disease == "ALS", `Sample Source` == "Spinal_Cord_Cervical")
+```
+
+The number of samples was 117.
+```{r count.sample, echo=F}
+meta.sig.als.spinal %>% count() %>% gt()
+```
+All tests were Wilcoxon rank sum test. ns, p > 0.05; \*, p <= 0.05; \*\*, p <= 0.01; \*\*\*, p <= 0.001.
+
+```{r gather, echo=F}
+# remove prefix "cl" from the names of clusters.
+clusters <- c(
+  "cl 1", "cl 2", "cl 3", "cl 4", "cl 5 6", "cl 7", "cl 8",
+  "cl 9", "cl 10", "cl 11", "cl 12", "cl 13", "cl 15"
+)
+levels <- clusters %>% str_remove("cl ") %>% str_replace(" ", "/")
+meta.sig.als.spinal.gather <- meta.sig.als.spinal %>%
+  gather(key = cluster, value = signature_score, starts_with("cl ")) %>%
+  mutate(cluster_wo_cl = cluster %>% str_remove("cl ") %>% str_replace(" ", "/") %>% factor(levels = levels))
+```
+
+# Sex
+None of microglia signatures had statistically significant differences between
+male and female.  
+```{r sex, echo=F}
+meta.sig.als.spinal.gather %>%
+  ggboxplot(x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Sex",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature") +
+  stat_compare_means(aes(group = Sex), label = "p.signif")
+
+meta.sig.als.spinal %>% count(Sex) %>% gt()
+```
+
+# Ethnicity
+There was no significant differences between Hispanic and non-Hispanic.  
+```{r ethnicity, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(Ethnicity != "Unknown") %>%
+  mutate(Ethnicity = ifelse(Ethnicity == "Not Hispanic or Latino, Ashkenazi Jewish", "Not Hispanic or Latino", Ethnicity)) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Ethnicity",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = Ethnicity), label = "p.signif")
+
+meta.sig.als.spinal %>% 
+  mutate(Ethnicity = ifelse(Ethnicity == "Not Hispanic or Latino, Ashkenazi Jewish", "Not Hispanic or Latino", Ethnicity)) %>%
+  count(Ethnicity) %>%
+  gt()
+```
+
+# Family History
+Signatures of microglia clusters 1, 2, 7, 8, 9, and 10 were enriched in
+patients with family history of ALS/FTD. Cluster 13 had an opposite trend.
+This result suggests contribution of genetics to microglia fractions. One
+concern is that only 26 donors reported presence/absence of family history.  
+```{r familiy, echo=F}
+
+# THIS CODE CHUNK DOES NOT WORK ANYMORE PROBABLY BECAUSE OF VERSION ISSUE.
+
+# meta.sig.als.spinal.gather %>%
+#   filter(`Family History of ALS/FTD?` != "Unknown") %>%
+#   ggboxplot(
+#             x = "cluster_wo_cl",
+#             y = "signature_score",
+#             fill = "Family History of ALS/FTD?",
+#             xlab = "Microglia clusters",
+#             ylab = "Gene expression signature"
+#           ) +
+#   stat_compare_means(aes(group = `Family History of ALS/FTD?`), label = "p.signif")
+# 
+# meta.sig.als.spinal %>% 
+#   count(`Family History of ALS/FTD?`) %>%
+#   gt()
+```
+
+# FTD
+No significant differences.  
+```{r ftd, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(`MND with FTD?` %in% c("Yes", "No")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "MND with FTD?",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `MND with FTD?`), label = "p.signif")
+
+meta.sig.als.spinal %>% 
+  count(`MND with FTD?`) %>%
+  gt()
+```
+
+# Dementia
+No significant differences.  
+```{r dementia, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(`MND with Dementia?` %in% c("Yes", "No")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "MND with Dementia?",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `MND with Dementia?`), label = "p.signif")
+
+meta.sig.als.spinal %>% 
+  count(`MND with Dementia?`) %>%
+  gt()
+```
+
+# Age at Symptom Onset
+No siginificant differences. Dichotomized with the median age at symptom onset
+(63 yrs).  
+```{r age.onset, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(!is.na(`Age at Symptom Onset`)) %>%
+  mutate(`Age at Symptom Onset` = ifelse(`Age at Symptom Onset` < 63, "<63 yrs", ">=63 yrs")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Age at Symptom Onset",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `Age at Symptom Onset`), label = "p.signif")
+
+cat("Age at Symptom Onset:\n")
+print(summary(meta.sig.als.spinal$`Age at Symptom Onset`))
+```
+
+# Age at Death
+Cluster 11 had a difference. Dichotomized with the median age at death
+(66 yrs).  
+```{r age.death, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(!is.na(`Age at Death`)) %>%
+  mutate(`Age at Death` = ifelse(`Age at Death` < 66, "<66 yrs", ">=66 yrs")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Age at Death",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `Age at Death`), label = "p.signif")
+
+cat("Age at Death:\n")
+print(summary(meta.sig.als.spinal$`Age at Death`))
+```
+
+# Disease Duration
+```{r duration, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(!is.na(`Disease Duration in Months`)) %>%
+  ggplot(aes(
+    x = `Disease Duration in Months`,
+    y = signature_score,
+  )) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  facet_wrap(~ cluster, scales = "free_y") +
+  theme_classic() +
+  theme(strip.background = element_rect(fill="gray")) +
+  xlab("Disease Duration (months)") +
+  ylab("Gene expression signature")
+
+calc.cor <- function(t){
+  ct <- cor.test(~ signature_score + `Disease Duration in Months`, data=t)
+  data.frame(pearson.correlation.coeff = ct$estimate, p.value=ct$p.value)
+}
+
+cor.res <- meta.sig.als.spinal.gather %>% 
+  group_by(cluster) %>%
+  do(calc.cor(.)) %>%
+  ungroup
+
+gt(cor.res)
+
+cat("Disease Duration in Months:\n")
+print(summary(meta.sig.als.spinal$`Disease Duration in Months`))
+
+```
+
+# Disease Duration (5-year threshold)
+A threshold of 5 years seems often used in MS studies. Donors with longer
+disease duration have lower signatures of clusters 1, 4, 5/6, and 7.  
+```{r duration.5yr, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(!is.na(`Disease Duration in Months`)) %>%
+  mutate(`Disease Duration` = ifelse(`Disease Duration in Months` >= 60, ">=5 yrs", "<5 yrs")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Disease Duration",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `Disease Duration`), label = "p.signif")
+
+cat("Disease Duration in Months:\n")
+```
+
+# Disease Duration (2-year threshold)
+This threshold (2 years) is shown here because it had more associations with
+signatures than other thresholds (e.g. 1 year, 3 years, and 5 years). Donors
+with longer disease duration have lower signatures of clusters 1, 4, 7,
+8, and 10. Cluster 13 had an opposite trend.  
+```{r duration.2yr, echo=F}
+meta.sig.als.spinal.gather %>%
+  filter(!is.na(`Disease Duration in Months`)) %>%
+  mutate(`Disease Duration` = ifelse(`Disease Duration in Months` >= 24, ">=2 yrs", "<2 yrs")) %>%
+  ggboxplot(
+            x = "cluster_wo_cl",
+            y = "signature_score",
+            fill = "Disease Duration",
+            xlab = "Microglia clusters",
+            ylab = "Gene expression signature"
+          ) +
+  stat_compare_means(aes(group = `Disease Duration`), label = "p.signif")
+```
+
+# C9orf72
+Cluster 11 had a difference.  
+```{r C9orf72, echo=F}
+
+# THIS CODE CHUNK DOES NOT WORK ANYMORE PROBABLY BECAUSE OF VERSION ISSUE.
+
+# meta.sig.als.spinal.gather %>%
+#   filter(`C9orf72 Repeat Expansion (Data from CUMC)` %in% c("Yes", "No")) %>%
+#   ggboxplot(
+#             x = "cluster_wo_cl",
+#             y = "signature_score",
+#             fill = "C9orf72 Repeat Expansion (Data from CUMC)",
+#             xlab = "Microglia clusters",
+#             ylab = "Gene expression signature"
+#           ) +
+#   stat_compare_means(aes(group = `C9orf72 Repeat Expansion (Data from CUMC)`), label = "p.signif")
+# 
+# meta.sig.als.spinal %>% 
+#   count(`C9orf72 Repeat Expansion (Data from CUMC)`) %>%
+#   gt()
+```
+
+# ATXN2
+No significant differences.  
+```{r ATXN2, echo=F}
+
+# THIS CODE CHUNK DOES NOT WORK ANYMORE PROBABLY BECAUSE OF VERSION ISSUE.
+
+# meta.sig.als.spinal.gather %>%
+#   filter(`ATXN2 Repeat Expansion (Data from CUMC)` != "Unknown") %>%
+#   ggboxplot(
+#             x = "cluster_wo_cl",
+#             y = "signature_score",
+#             fill = "ATXN2 Repeat Expansion (Data from CUMC)",
+#             xlab = "Microglia clusters",
+#             ylab = "Gene expression signature"
+#           ) +
+#   stat_compare_means(aes(group = `ATXN2 Repeat Expansion (Data from CUMC)`), label = "p.signif")
+# 
+# meta.sig.als.spinal %>% 
+#   count(`ATXN2 Repeat Expansion (Data from CUMC)`) %>%
+#   gt()
+```
