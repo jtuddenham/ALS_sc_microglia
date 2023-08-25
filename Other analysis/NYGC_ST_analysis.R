@@ -9,7 +9,7 @@ library(ggrepel)
 library(tidyverse)
 library(reshape2)
 
-stmeta = read_xlsx("Metadata_05132019_SM.xlsx") ###remove/change this?###
+stmeta = read_xlsx("Metadata_05132019.xlsx") ###available as supplementary table X###
 # stmeta=read.table("metadata/human_sample_names_sra.tsv",as.is=T,skip=1)
 allhuman=list()
 for (ii in 1:nrow(stmeta)) {
